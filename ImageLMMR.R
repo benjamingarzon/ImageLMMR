@@ -1,10 +1,16 @@
 library(lmerTest)
 library(multcomp)
 library(reshape)
-library(oro.nifti)
+#library(oro.nifti)
+library(neurobase)
 library(doParallel)
 library(foreach)
 
+# clusters for surface xxxxx
+# do shuffling properly
+# add acceleration
+#save num_outliers
+# mass stat, use abs value?
 ##############################################################################
 # Example
 
@@ -78,7 +84,7 @@ get_time = function(set=F){
   now = proc.time()[3]
   time.diff = now - time.old
   time.old <<- now
-  if (!set) print(paste("Duration:", time.diff, "seconds."))
+  if (!set) print(paste("Duration:", format(time.diff, digits = 3, nsmall = 3), "seconds."))
 }
 
 test_test = function(do_test){
@@ -132,12 +138,10 @@ find_outliers = function(y, X){
 
 gifti_convert = '/home/share/Software/HCP/workbench/bin_rh_linux64/wb_command -metric-convert -from-nifti '
 
-
 save_result = function(x, mask, tag, REF_FILE, to_gifti = '', flip = F){
-  
-  if (is.character(mask) & length(mask) == 1) mask = readNIfTI(mask)
+
+  if (is.character(mask) & length(mask) == 1) mask = fast_readnii(mask)
   print(paste('Saving file', tag))
-  
   n = nrow(x)
   if (is.null(n)) n = 1
   d = dim(mask)
@@ -145,14 +149,15 @@ save_result = function(x, mask, tag, REF_FILE, to_gifti = '', flip = F){
   
   d = c(d[1:3], n)    
 
-  data.out = nifti(array(0, d)) 
-  pixdim(data.out) <- pixdim(mask)
-  data.out@pixdim[5] = 1  
+  data.out = nifti(array(0, d))
+  data.out = copyNIfTIHeader(img = mask, data.out, drop_slots = "Dimension")
+  #pixdim(data.out) <- pixdim(mask)
+  #data.out@pixdim[5] = 1  
   datatype(data.out) <- 16
   bitpix(data.out) <- 32
-  data.out@xyzt_units <- mask@xyzt_units
-  aux = mask
+  #data.out@xyzt_units <- mask@xyzt_units
   
+  aux = mask
   if (n > 1){
     for (i in seq(n)){
       print(i/n*100)
@@ -162,14 +167,14 @@ save_result = function(x, mask, tag, REF_FILE, to_gifti = '', flip = F){
   }
   else {
     data.out[mask > 0] <- x
-    data.out@qform_code <- mask@qform_code
-    data.out@sform_code <- mask@sform_code
+    #data.out@qform_code <- mask@qform_code
+    #data.out@sform_code <- mask@sform_code
     
   }
-  
-  suppressWarnings(writeNIfTI(data.out, filename = tag))
-  system(paste("fslcpgeom", REF_FILE, tag))
-  
+
+  #suppressWarnings(writeNIfTI(data.out, filename = tag))
+  #system(paste("fslcpgeom", REF_FILE, tag))
+  writenii(data.out, filename = tag)
   if (flip) system(paste("fslswapdim", tag, "-x y z", tag))
   
   if (to_gifti != ''){ 
@@ -180,55 +185,6 @@ save_result = function(x, mask, tag, REF_FILE, to_gifti = '', flip = F){
   
 }  
 
-save_index = function(x, mask, tag, REF_FILE, flip = F){
-  
-  if (is.character(mask) & length(mask) == 1) mask = readNIfTI(mask)
-  print(paste('Saving file', tag))
-  
-  n = nrow(x)
-  if (is.null(n)) {
-    n = 1
-    l = length(x)
-  } else l = ncol(x)
-  
-  d = dim(mask)
-  if (is.na(d[3])) d[3] = 1
-  
-  data.out = nifti(array(0, d)) 
-  pixdim(data.out) <- pixdim(mask)
-  data.out@pixdim[5] = 1  
-  datatype(data.out) <- 16
-  bitpix(data.out) <- 32
-  data.out@xyzt_units <- mask@xyzt_units
-  aux = mask
-  indices = seq(l)
-  
-  # if (n > 1){
-  #   for (i in seq(n)){
-  #     print(i/n*100)
-  #     aux[mask > 0] <- x[i, ]
-  #     data.out@.Data[, , , i] <- aux    
-  #   }
-  # }
-#  else {
-    data.out[mask > 0] <- indices
-    data.out@qform_code <- mask@qform_code
-    data.out@sform_code <- mask@sform_code
-    
-#  }
-  
-  suppressWarnings(writeNIfTI(data.out, filename = tag))
-  system(paste("fslcpgeom", REF_FILE, tag))
-  
-  if (flip) system(paste("fslswapdim", tag, "-x y z", tag))
-  
-  if (to_gifti != ''){ 
-    command = paste0(gifti_convert, tag, '.nii.gz ', to_gifti, ' ', tag, '.func.gii') 
-    system(command)
-    unlink(paste0(tag, '.nii.gz'))
-  }
-  
-}  
 
 
 vbanalysis  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests, excluded=NULL, to_gifti='', remove_outliers=T, 
@@ -242,9 +198,13 @@ vbanalysis  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests, excl
   
   print(paste('Reading data from', IMAGING_FILE))  
   
-  imaging <- readNIfTI(IMAGING_FILE)
-  mask <- readNIfTI(MASK_FILE)
+  #imaging <- readNIfTI(IMAGING_FILE)
+  #mask <- readNIfTI(MASK_FILE)
+  imaging <- fast_readnii(IMAGING_FILE)
+  mask <- fast_readnii(MASK_FILE)
   
+  # mask[mask > 0] = c(rep(1, 100), rep(0, sum(mask > 0) - 100))
+
   shape <- dim(imaging)
   n_scans <- shape[4]
   n_voxels <- sum(mask > 0)
@@ -343,7 +303,6 @@ vbanalysis  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests, excl
     dir.create(OUTPUT_DIR)
     setwd(OUTPUT_DIR)
   }  
-  
   for (i in seq(length(tags))){
     save_result(results[, i], mask, tags[i], MASK_FILE, to_gifti, flip = flip)
     if (!is.null(upsample)){
@@ -352,15 +311,16 @@ vbanalysis  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests, excl
     }
   }
   
-  #   
-  #   save_result(num_outliers, mask, "num_outliers", MASK_FILE, to_gifti)
-  #   save_result(dev, mask, "std", MASK_FILE, to_gifti)
-  #   
-  #   if (!is.null(upsample)){
-  #        system(paste0('mri_vol2vol --mov std.nii.gz --targ ', upsample, ' --o std.nii.gz --regheader'))
-  #        system(paste0('mri_vol2vol --mov num_outliers.nii.gz --targ ', upsample, ' --o num_outliers.nii.gz --regheader'))
-  #   }
-  #   
+  
+  if(remove_outliers){
+     save_result(num_outliers, mask, "num_outliers", MASK_FILE, to_gifti)
+     save_result(dev, mask, "std", MASK_FILE, to_gifti)
+     
+     if (!is.null(upsample)){
+         system(paste0('mri_vol2vol --mov std.nii.gz --targ ', upsample, ' --o std.nii.gz --regheader'))
+          system(paste0('mri_vol2vol --mov num_outliers.nii.gz --targ ', upsample, ' --o num_outliers.nii.gz --regheader'))
+     }
+  }   
   print('Done!')  
   print('------------------------------------------------------------')  
   
@@ -369,33 +329,39 @@ vbanalysis  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests, excl
 
 
 shuffle_data = function(data, by = NULL){
-  
+  #browser()
   # get the group for each subject
   data.shuff = data
   
-  GROUP = factor(levels=c("late", "early"))
+  #GROUP = factor(levels=c("late", "early"))
   SUBJECTS = unique(data$SUBJECT)
   
-  for (sub in seq(length(SUBJECTS))){
-    GROUP[sub] = data$GROUP[data$SUBJECT == SUBJECTS[sub]][1]      
-  }
+  #for (sub in seq(length(SUBJECTS))){
+  #  GROUP[sub] = data$GROUP[data$SUBJECT == SUBJECTS[sub]][1]      
+  #}
   
+  #data.shuff$TRAINING = sample(data.shuff$TRAINING, replace = F)
+  # shuffle subject
+  #if ('SUBJECT' %in% by){
+  #    GROUP.SAMPLED = sample(GROUP, replace = F)
+  #    for (sub in seq(length(SUBJECTS))){
+  #      data.shuff$GROUP[data.shuff$SUBJECT == SUBJECTS[sub]]  = GROUP.SAMPLED[sub]
+  #    }      
   
-  # shuffle group
-  if ('GROUP' %in% by){
-    GROUP.SAMPLED = sample(GROUP, replace = F)
-    for (sub in seq(length(SUBJECTS))){
-      data.shuff$GROUP[data.shuff$SUBJECT == SUBJECTS[sub]]  = GROUP.SAMPLED[sub]
-    }      
-  }
+  #  if ('GROUP' %in% by){
+#    GROUP.SAMPLED = sample(GROUP, replace = F)
+#    for (sub in seq(length(SUBJECTS))){
+#      data.shuff$GROUP[data.shuff$SUBJECT == SUBJECTS[sub]]  = GROUP.SAMPLED[sub]
+#    }      
+#  }
   
-  variables = c("WEEK", "TRAINING", "WEEK.MEAN", "t.TRAINING", "t2.TRAINING", "REALWEEK")
+  variables = c("TRAINING", "TRAINING.Q", "TRAINING.A", "TRAINING.L")
   
   # shuffle by TRAINING
   if ('TIME' %in% by){
     for (sub in seq(length(SUBJECTS))){
       # shuffle data within subject
-      mysample = sample(seq(sum(data.shuff$SUBJECT == SUBJECTS[sub])))
+      mysample = sample(seq(sum(data.shuff$SUBJECT == SUBJECTS[sub])), replace = F)
       data.shuff[data.shuff$SUBJECT == SUBJECTS[sub], variables] = 
         data.shuff[data.shuff$SUBJECT == SUBJECTS[sub], variables][mysample, ]  
       
@@ -403,9 +369,9 @@ shuffle_data = function(data, by = NULL){
   }
   
   # change the sign randomly
-  if ('INTERCEPT' %in% by){
-    data.shuff$Intercept = 2*rbinom(nrow(data), 1, 0.5) - 1
-  } 
+  #if ('INTERCEPT' %in% by){
+  #  data.shuff$Intercept = 2*rbinom(nrow(data), 1, 0.5) - 1
+  #} 
   
   return(data.shuff)
 }
@@ -425,8 +391,10 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
   
   print(paste('Reading data from', IMAGING_FILE))  
   
-  imaging <- readNIfTI(IMAGING_FILE)
-  mask <- readNIfTI(MASK_FILE)
+  imaging <- fast_readnii(IMAGING_FILE)
+  mask <- fast_readnii(MASK_FILE)
+
+#  mask[mask > 0] = c(rep(1, 2000), rep(0, sum(mask > 0) - 2000))
   
   shape <- dim(imaging)
   n_scans <- shape[4]
@@ -477,14 +445,13 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
     setwd(OUTPUT_DIR)
   }  
   
-  
   print('Testing model')  
   print(paste('Analyzing', nrow(data), 'observations'))  
   
   # test model
   cl <- makeCluster(NCLUSTERS)
   registerDoParallel(cl)
-  
+
   cluster.stats = NULL
   for (perm in seq(NPERMS)){
     if (perm != NPERMS){
@@ -494,11 +461,19 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
       data.shuff = data
     }
     
-    results.perm = foreach(i = seq(n_voxels), 
-                           .packages = c('lmerTest', 'multcomp'),
-                           .export = c('do_tests'), 
-                           .combine = 'rbind') %dopar% do_tests(imaging.mat[, i], data.shuff,
-                                                                contrast.names = contrast.names, contrast.mat = contrast.mat)
+    if (is.null(contrast.mat)){
+      results.perm = foreach(i = seq(n_voxels), 
+                        .packages = c('lmerTest', 'multcomp'),
+                        .export = c('do_tests'), 
+                        .combine = 'rbind') %dopar% do_tests(imaging.mat[, i], data.shuff)
+    } else {
+      
+      results.perm = foreach(i = seq(n_voxels), 
+                        .packages = c('lmerTest', 'multcomp'),
+                        .export = c('do_tests'), 
+                        .combine = 'rbind') %dopar% do_tests(imaging.mat[, i], data.shuff, 
+                                                             contrast.names = contrast.names, contrast.mat = contrast.mat)
+    }
     
     # print out and find clusters
     tags = colnames(results.perm) 
@@ -510,24 +485,35 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
     coefs = results.perm[, grep( "\\_coef$", tags), drop = F]
     pvalues = results.perm[, grep( "\\_p$", tags), drop = F]
     ptags = colnames(pvalues)
+    
     for (i in seq(length(ptags))){
       save_result(1 - pvalues[, i], mask, ptags[i], MASK_FILE, to_gifti)
       unlink('clusters.sum')
-      system(paste('mri_volcluster --in', paste0(ptags[i],'.nii.gz'), '--thmin', 1 - cluster.thr,  '--minsizevox', 
-                   MINCLUSSIZE, '--ocn clusters.nii.gz --sum clusters.sum'))
+      
+      if (to_gifti != ""){
+        hemi = ifelse(grep("rh.", to_gifti), "rh", "lh")
+        system(paste('mri_surfcluster --in', paste0(ptags[i],'.func.gii'), '--thmin', 1 - cluster.thr,  '--minarea', 
+                     MINCLUSSIZE, '--hemi', hemi, '--ocn clusters.nii.gz --sum clusters.sum --subject fsaverage'))
+        system('if [ `cat clusters.sum | wc -l` -eq 34 ]; then rm clusters.sum; fi') # no clusters
+        #browser()
+      } else { 
+        system(paste('mri_volcluster --in', paste0(ptags[i],'.nii.gz'), '--thmin', 1 - cluster.thr,  '--minsizevox', 
+                     MINCLUSSIZE, '--ocn clusters.nii.gz --sum clusters.sum'))
+        system('if [ `cat clusters.sum | wc -l` -eq 27 ]; then rm clusters.sum; fi') # no clusters
+      }
       system(paste0('cp clusters.nii.gz ', ptags[i], '_cluster.nii.gz'))                   
-      system('if [ `cat clusters.sum | wc -l` -eq 27 ]; then rm clusters.sum; fi')
       
       if (file.exists('clusters.sum')) {
         clusters.sum = read.table('clusters.sum')        
+        if (to_gifti != "") clusters.sum = clusters.sum[c(1, 8, 4, 5, 6, 7, 2)] 
         colnames(clusters.sum) = c("Cluster", "Size", "Volume", "X", "Y", "Z", "Max")
         clusters.sum$Mass = 0
         clusters.sum$index = i
         clusters.sum$test_name = ptags[i]
-        clusters.vol = readNIfTI('clusters.nii.gz')
+        clusters.vol = fast_readnii('clusters.nii.gz')
         clusters.mat = clusters.vol[mask > 0]
         for (j in seq(max(clusters.mat))){
-          clusters.sum$Mass[j] = sum((clusters.mat == j) * (abs(tstats[, i])))
+          clusters.sum$Mass[j] = sum((clusters.mat == j) * (abs(tstats[, i]))) 
         }
         
         # choose statistic to use
@@ -540,7 +526,8 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
         clusters = cbind(clusters, rep(0, sum(mask)))
       }
     }
-    cluster.stats = rbind(cluster.stats, cluster.stat) # max size for each perm; rows = perms, cols = tests
+    cluster.stats = rbind(cluster.stats, cluster.stat) # maximum for each perm; rows = perms, cols = tests
+    colnames(cluster.stats) = ptags
     print(cluster.stats)
     print(clusters.perm)
     get_time()
@@ -561,27 +548,32 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
         clusters.sum$p.value[clusters.sum$index == i] = 
           sapply(clusters.sum[clusters.sum$index == i, statistic], 
                  function(x) sum(x <= cluster.stats[, i])/NPERMS)
-        myclusters = clusters.sum[clusters.sum$index == i, ]
+
+        # approximation
+        # fit curve to cluster.stats[, i] and derive p value
+        myclusters = clusters.sum[clusters.sum$index == i, drop = F]
         myclusters.sig = myclusters$p.value <= alpha.FWE
         
         # eliminate non-significant clusters from cluster image
-        for ( j in seq(ncol(myclusters))){
+        for ( j in seq(nrow(myclusters))){
           cluster_FWE[clusters[, i] == j, i] = myclusters$p.value[j] 
         }
         
         if (sum(myclusters.sig)> 0){
-          maxcluster = max(myclusters$Cluster[myclusters.sig])                      
-          clusters[, i][ clusters[, i] > maxcluster ] = 0
-          print(sum(abs(clusters)))
+          #maxcluster = max(myclusters$Cluster[myclusters.sig])
+          #minstatistic = min(myclusters[myclusters.sig, statistic])
+          #clusters[, i][ clusters[, i] > maxcluster ] = 0
+          which.clusters = myclusters$Cluster[myclusters.sig]
+          clusters[, i][ ! clusters[, i] %in% which.clusters ] = 0
           print(sum(abs(clusters)))
         } else {
           clusters[, i] = 0        
         }
       }    
-    }
+    } # cluster.stats
     print(clusters.sum)
-    write.table(clusters.sum, row.names = F, col.names = F, file = 'clusters.sum')
-    write.table(cluster.stats, row.names = F, col.names = F, file = 'clusters.stat')
+    write.table(clusters.sum, row.names = F, col.names = T, file = 'clusters.sum')
+    write.table(cluster.stats, row.names = F, col.names = T, file = 'clusters.stat')
     
     #FDR adjustment
     #pvalues = results[, grep( "\\_p$", tags)]
@@ -617,14 +609,15 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
     }
   } 
   
-  #   save_result(num_outliers, mask, "num_outliers", MASK_FILE, to_gifti)
-  #   save_result(dev, mask, "std", MASK_FILE, to_gifti)
-  # 
-  #   if (!is.null(upsample)){
-  #      system(paste0('mri_vol2vol --mov std.nii.gz --targ ', upsample, ' --o std.nii.gz --regheader'))
-  #      system(paste0('mri_vol2vol --mov num_outliers.nii.gz --targ ', upsample, ' --o num_outliers.nii.gz --regheader --nearest'))
-  #   }
-  
+  if(remove_outliers){
+     save_result(num_outliers, mask, "num_outliers", MASK_FILE, to_gifti)
+     save_result(dev, mask, "std", MASK_FILE, to_gifti)
+   
+     if (!is.null(upsample)){
+        system(paste0('mri_vol2vol --mov std.nii.gz --targ ', upsample, ' --o std.nii.gz --regheader'))
+        system(paste0('mri_vol2vol --mov num_outliers.nii.gz --targ ', upsample, ' --o num_outliers.nii.gz --regheader --nearest'))
+     }
+  }
   print('Done!')  
   print('------------------------------------------------------------')  
   
@@ -682,3 +675,101 @@ save_fig = function(figname=NULL, width=6.5, height=6.5, res=600, jpg=F){
   
 }
 
+### NOT USED
+save_index = function(x, mask, tag, REF_FILE, flip = F){
+  
+  if (is.character(mask) & length(mask) == 1) mask = readNIfTI(mask)
+  print(paste('Saving file', tag))
+  
+  n = nrow(x)
+  if (is.null(n)) {
+    n = 1
+    l = length(x)
+  } else l = ncol(x)
+  
+  d = dim(mask)
+  if (is.na(d[3])) d[3] = 1
+  
+  data.out = nifti(array(0, d)) 
+  pixdim(data.out) <- pixdim(mask)
+  data.out@pixdim[5] = 1  
+  datatype(data.out) <- 16
+  bitpix(data.out) <- 32
+  data.out@xyzt_units <- mask@xyzt_units
+  aux = mask
+  indices = seq(l)
+  
+  # if (n > 1){
+  #   for (i in seq(n)){
+  #     print(i/n*100)
+  #     aux[mask > 0] <- x[i, ]
+  #     data.out@.Data[, , , i] <- aux    
+  #   }
+  # }
+  #  else {
+  data.out[mask > 0] <- indices
+  data.out@qform_code <- mask@qform_code
+  data.out@sform_code <- mask@sform_code
+  
+  #  }
+  
+  suppressWarnings(writeNIfTI(data.out, filename = tag))
+  system(paste("fslcpgeom", REF_FILE, tag))
+  
+  if (flip) system(paste("fslswapdim", tag, "-x y z", tag))
+  
+  if (to_gifti != ''){ 
+    command = paste0(gifti_convert, tag, '.nii.gz ', to_gifti, ' ', tag, '.func.gii') 
+    system(command)
+    unlink(paste0(tag, '.nii.gz'))
+  }
+  
+}  
+
+
+save_result_oro = function(x, mask, tag, REF_FILE, to_gifti = '', flip = F){
+  
+  if (is.character(mask) & length(mask) == 1) mask = readNIfTI(mask)
+  print(paste('Saving file', tag))
+  
+  n = nrow(x)
+  if (is.null(n)) n = 1
+  d = dim(mask)
+  if (is.na(d[3])) d[3] = 1
+  
+  d = c(d[1:3], n)    
+  
+  data.out = nifti(array(0, d)) 
+  pixdim(data.out) <- pixdim(mask)
+  data.out@pixdim[5] = 1  
+  datatype(data.out) <- 16
+  bitpix(data.out) <- 32
+  data.out@xyzt_units <- mask@xyzt_units
+  aux = mask
+  
+  if (n > 1){
+    for (i in seq(n)){
+      print(i/n*100)
+      aux[mask > 0] <- x[i, ]
+      data.out@.Data[, , , i] <- aux    
+    }
+  }
+  else {
+    data.out[mask > 0] <- x
+    data.out@qform_code <- mask@qform_code
+    data.out@sform_code <- mask@sform_code
+    
+  }
+  
+  suppressWarnings(writeNIfTI(data.out, filename = tag))
+  system(paste("fslcpgeom", REF_FILE, tag))
+  
+  if (flip) system(paste("fslswapdim", tag, "-x y z", tag))
+  
+  if (to_gifti != ''){ 
+    command = paste0(gifti_convert, tag, '.nii.gz ', to_gifti, ' ', tag, '.func.gii') 
+    system(command)
+    unlink(paste0(tag, '.nii.gz'))
+  }
+  
+}  
