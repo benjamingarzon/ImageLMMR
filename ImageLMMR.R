@@ -1,7 +1,6 @@
 library(lmerTest)
 library(multcomp)
 library(reshape)
-#library(oro.nifti)
 library(neurobase)
 library(doParallel)
 library(foreach)
@@ -198,13 +197,9 @@ vbanalysis  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests, excl
   
   print(paste('Reading data from', IMAGING_FILE))  
   
-  #imaging <- readNIfTI(IMAGING_FILE)
-  #mask <- readNIfTI(MASK_FILE)
   imaging <- fast_readnii(IMAGING_FILE)
   mask <- fast_readnii(MASK_FILE)
   
-  # mask[mask > 0] = c(rep(1, 100), rep(0, sum(mask > 0) - 100))
-
   shape <- dim(imaging)
   n_scans <- shape[4]
   n_voxels <- sum(mask > 0)
@@ -329,50 +324,40 @@ vbanalysis  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests, excl
 
 
 shuffle_data = function(data, by = NULL){
-  #browser()
   # get the group for each subject
   data.shuff = data
   
-  #GROUP = factor(levels=c("late", "early"))
-  SUBJECTS = unique(data$SUBJECT)
+  data.pattern = data %>% group_by(SUBJECT) %>% summarise(PATTERN = paste(c(TP), collapse = '-'))
   
-  #for (sub in seq(length(SUBJECTS))){
-  #  GROUP[sub] = data$GROUP[data$SUBJECT == SUBJECTS[sub]][1]      
-  #}
-  
-  #data.shuff$TRAINING = sample(data.shuff$TRAINING, replace = F)
-  # shuffle subject
-  #if ('SUBJECT' %in% by){
-  #    GROUP.SAMPLED = sample(GROUP, replace = F)
-  #    for (sub in seq(length(SUBJECTS))){
-  #      data.shuff$GROUP[data.shuff$SUBJECT == SUBJECTS[sub]]  = GROUP.SAMPLED[sub]
-  #    }      
-  
-  #  if ('GROUP' %in% by){
-#    GROUP.SAMPLED = sample(GROUP, replace = F)
-#    for (sub in seq(length(SUBJECTS))){
-#      data.shuff$GROUP[data.shuff$SUBJECT == SUBJECTS[sub]]  = GROUP.SAMPLED[sub]
-#    }      
-#  }
-  
-  variables = c("TRAINING", "TRAINING.Q", "TRAINING.A", "TRAINING.L")
-  
-  # shuffle by TRAINING
-  if ('TIME' %in% by){
-    for (sub in seq(length(SUBJECTS))){
-      # shuffle data within subject
-      mysample = sample(seq(sum(data.shuff$SUBJECT == SUBJECTS[sub])), replace = F)
-      data.shuff[data.shuff$SUBJECT == SUBJECTS[sub], variables] = 
-        data.shuff[data.shuff$SUBJECT == SUBJECTS[sub], variables][mysample, ]  
+  var.between = c("GROUP")
+  var.within = c("TRAINING", "TRAINING.Q", "TRAINING.A", "TRAINING.L")
+
+  # shuffle by SUBJECT
+  if ('BETWEEN' %in% by){
+    for (p in unique(data.pattern$PATTERN)){
+      # shuffle subjects with the same pattern
+      mysubjects = data.pattern$SUBJECT[data.pattern$PATTERN == p]
+      new.index = sample(length(mysubjects), replace = F)
       
+      for (index in seq(length(mysubjects))){
+          data.shuff[data$SUBJECT == mysubjects[index], c("SUBJECT", var.between, var.within)] = 
+            data[data$SUBJECT == mysubjects[new.index[index]], c("SUBJECT", var.between, var.within)]
+          
+          if ('WITHIN' %in% by){
+            # shuffle data within subject
+            mysample = sample(seq(sum(data$SUBJECT == mysubjects[index])), replace = F)
+            data.shuff[data$SUBJECT == mysubjects[index], var.within] = 
+              data.shuff[data$SUBJECT == mysubjects[index], var.within][mysample, ] 
+          }  
+      }
     }
   }
   
   # change the sign randomly
-  #if ('INTERCEPT' %in% by){
-  #  data.shuff$Intercept = 2*rbinom(nrow(data), 1, 0.5) - 1
-  #} 
-  
+  if ('INTERCEPT' %in% by){
+    data.shuff$Intercept = 2*rbinom(nrow(data), 1, 0.5) - 1
+  } 
+
   return(data.shuff)
 }
 
@@ -390,12 +375,11 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
   get_time(T)
   
   print(paste('Reading data from', IMAGING_FILE))  
-  
+  #browser()
   imaging <- fast_readnii(IMAGING_FILE)
   mask <- fast_readnii(MASK_FILE)
 
 #  mask[mask > 0] = c(rep(1, 2000), rep(0, sum(mask > 0) - 2000))
-  
   shape <- dim(imaging)
   n_scans <- shape[4]
   n_voxels <- sum(mask > 0)
@@ -495,7 +479,7 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
         system(paste('mri_surfcluster --in', paste0(ptags[i],'.func.gii'), '--thmin', 1 - cluster.thr,  '--minarea', 
                      MINCLUSSIZE, '--hemi', hemi, '--ocn clusters.nii.gz --sum clusters.sum --subject fsaverage'))
         system('if [ `cat clusters.sum | wc -l` -eq 34 ]; then rm clusters.sum; fi') # no clusters
-        #browser()
+        
       } else { 
         system(paste('mri_volcluster --in', paste0(ptags[i],'.nii.gz'), '--thmin', 1 - cluster.thr,  '--minsizevox', 
                      MINCLUSSIZE, '--ocn clusters.nii.gz --sum clusters.sum'))
@@ -531,6 +515,8 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
     print(cluster.stats)
     print(clusters.perm)
     get_time()
+    write.table(cluster.stats, row.names = F, col.names = T, file = 'clusters.stat')
+    
   } # perms
   stopCluster(cl)
   
@@ -551,7 +537,7 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
 
         # approximation
         # fit curve to cluster.stats[, i] and derive p value
-        myclusters = clusters.sum[clusters.sum$index == i, drop = F]
+        myclusters = clusters.sum[clusters.sum$index == i, , drop = F]
         myclusters.sig = myclusters$p.value <= alpha.FWE
         
         # eliminate non-significant clusters from cluster image
@@ -560,9 +546,6 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
         }
         
         if (sum(myclusters.sig)> 0){
-          #maxcluster = max(myclusters$Cluster[myclusters.sig])
-          #minstatistic = min(myclusters[myclusters.sig, statistic])
-          #clusters[, i][ clusters[, i] > maxcluster ] = 0
           which.clusters = myclusters$Cluster[myclusters.sig]
           clusters[, i][ ! clusters[, i] %in% which.clusters ] = 0
           print(sum(abs(clusters)))
@@ -573,7 +556,6 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
     } # cluster.stats
     print(clusters.sum)
     write.table(clusters.sum, row.names = F, col.names = T, file = 'clusters.sum')
-    write.table(cluster.stats, row.names = F, col.names = T, file = 'clusters.stat')
     
     #FDR adjustment
     #pvalues = results[, grep( "\\_p$", tags)]
@@ -586,9 +568,9 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
     
     colnames(cluster_FWE) = paste(colnames(pvalues), "cluster_FWE", sep="_")
     
-    if (sum(myclusters.sig)> 0){    
+    #if (sum(myclusters.sig)> 0){    
       results = cbind(results, p.fdr, clusters, cluster_maps, cluster_FWE)
-    }
+    #}
     tags = colnames(results) 
     results[, grep( "\\_p$", tags)] = 1 - results[, grep( "\\_p$", tags)]
     results[, grep( "\\_fdr$", tags)] = 1 - results[, grep( "\\_fdr$", tags)]
