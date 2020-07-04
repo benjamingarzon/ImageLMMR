@@ -228,7 +228,7 @@ vbanalysis  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests, excl
   if(remove_outliers){
     print('Finding outliers')  
     
-    cl <- makeCluster(NCLUSTERS)
+    cl <- makeCluster(NPROCS)
     registerDoParallel(cl)
     imaging.mat = foreach(i = seq(n_voxels), 
                           .export = c('find_outliers'), 
@@ -241,7 +241,7 @@ vbanalysis  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests, excl
   print('Testing model')  
   
   # test model
-  cl <- makeCluster(NCLUSTERS)
+  cl <- makeCluster(NPROCS)
   registerDoParallel(cl)
   
   if (is.null(contrast.mat)){
@@ -408,7 +408,7 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
   if(remove_outliers){
     print('Finding outliers')  
     
-    cl <- makeCluster(NCLUSTERS)
+    cl <- makeCluster(NPROCS)
     registerDoParallel(cl)
     imaging.mat = foreach(i = seq(n_voxels), 
                           .export = c('find_outliers'), 
@@ -433,12 +433,12 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
   print(paste('Analyzing', nrow(data), 'observations'))  
   
   # test model
-  cl <- makeCluster(NCLUSTERS)
+  cl <- makeCluster(NPROCS)
   registerDoParallel(cl)
 
   cluster.stats = NULL
   for (perm in seq(NPERMS)){
-    if (perm != NPERMS){
+    if (perm != 1){
       print(paste('Computing permutation ', perm, 'of', NPERMS))
       data.shuff = shuffle_data(data, by = shuffle_by)
     } else {
@@ -517,27 +517,32 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
     get_time()
     write.table(cluster.stats, row.names = F, col.names = T, file = 'clusters.stat')
     
+    if (perm == 1) {
+      results = results.perm
+      clusters.results = clusters.perm   
+    }
+    
   } # perms
   stopCluster(cl)
   
   # last iteration corresponds to unshuffled data
-  results = results.perm
-  clusters.sum = clusters.perm
+  #results = results.perm
+  #clusters.results = clusters.perm
   
   # find pvalues and threshold
-  if (nrow(clusters.sum)>0){
-    clusters.sum$p.value = 0
+  if (nrow(clusters.results)>0){
+    clusters.results$p.value = 0
     cluster_FWE = 1 + clusters*0
     
     for (i in seq(ncol(cluster.stats))){
-      if (sum(clusters.sum$index == i) > 0){
-        clusters.sum$p.value[clusters.sum$index == i] = 
-          sapply(clusters.sum[clusters.sum$index == i, statistic], 
+      if (sum(clusters.results$index == i) > 0){
+        clusters.results$p.value[clusters.results$index == i] = 
+          sapply(clusters.results[clusters.results$index == i, statistic], 
                  function(x) sum(x <= cluster.stats[, i])/NPERMS)
 
         # approximation
         # fit curve to cluster.stats[, i] and derive p value
-        myclusters = clusters.sum[clusters.sum$index == i, , drop = F]
+        myclusters = clusters.results[clusters.results$index == i, , drop = F]
         myclusters.sig = myclusters$p.value <= alpha.FWE
         
         # eliminate non-significant clusters from cluster image
@@ -554,8 +559,8 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
         }
       }    
     } # cluster.stats
-    print(clusters.sum)
-    write.table(clusters.sum, row.names = F, col.names = T, file = 'clusters.sum')
+    print(clusters.results)
+    write.table(clusters.results, row.names = F, col.names = T, file = 'clusters.sum')
     
     #FDR adjustment
     #pvalues = results[, grep( "\\_p$", tags)]
