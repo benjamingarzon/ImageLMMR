@@ -4,8 +4,9 @@ library(reshape)
 library(neurobase)
 library(doParallel)
 library(foreach)
+library(dplyr)
+mypackages =  c('lmerTest', 'multcomp', 'dplyr', 'reshape', 'irr')
 
-# clusters for surface xxxxx
 # do shuffling properly
 # add acceleration
 #save num_outliers
@@ -92,7 +93,24 @@ test_test = function(do_test){
   )
 }
 
+markoutliersIQR = function(x){
+  y = ifelse(x %in% boxplot(x, plot = F)$out, NA, x)
+  return(y)
+}
+
 find_outliers = function(y, X){
+
+  X$y = y
+  if(is.null(X$DEPTH)){
+  X = X %>% group_by(SUBJECT, SYSTEM) %>% dplyr::mutate(y = markoutliersIQR(y))
+  } else {
+  X = X %>% group_by(SUBJECT, SYSTEM, DEPTH) %>% dplyr::mutate(y = markoutliersIQR(y))
+  }
+  return(X$y)  
+}
+
+
+find_outliers_old = function(y, X){
   
   # is it a global outlier  
   #  y = imaging_data[, i]
@@ -144,6 +162,7 @@ save_result = function(x, mask, tag, REF_FILE, to_gifti = '', flip = F){
   n = nrow(x)
   if (is.null(n)) n = 1
   d = dim(mask)
+  if (is.na(d[2])) d[2] = 1
   if (is.na(d[3])) d[3] = 1
   
   d = c(d[1:3], n)    
@@ -215,12 +234,14 @@ vbanalysis  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests, excl
   }
   
   rm(imaging)
-  
   # remove bad cases 
   if (!is.null(excluded)){
     imaging.mat = imaging.mat[-excluded, ]
     data = data[-excluded, ]
   }
+
+  imagdim = dim(imaging.mat)
+  print(paste('Final imaging data size', imagdim[1], imagdim[2]))
   
   get_time()
   
@@ -231,9 +252,11 @@ vbanalysis  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests, excl
     cl <- makeCluster(NPROCS)
     registerDoParallel(cl)
     imaging.mat = foreach(i = seq(n_voxels), 
-                          .export = c('find_outliers'), 
+                          .export = c('find_outliers', 'markoutliersIQR'),
+                          .packages = mypackages, 
                           .combine = 'cbind') %dopar% find_outliers(imaging.mat[, i], data)
     stopCluster(cl)
+    get_time()
   }
   
   num_outliers = colSums(is.na(imaging.mat))
@@ -246,13 +269,13 @@ vbanalysis  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests, excl
   
   if (is.null(contrast.mat)){
     results = foreach(i = seq(n_voxels), 
-                      .packages = c('lmerTest', 'multcomp'),
+                      .packages = mypackages,
                       .export = c('do_tests'), 
                       .combine = 'rbind') %dopar% do_tests(imaging.mat[, i], data)
   } else {
     
     results = foreach(i = seq(n_voxels), 
-                      .packages = c('lmerTest', 'multcomp'),
+                      .packages = mypackages,
                       .export = c('do_tests'), 
                       .combine = 'rbind') %dopar% do_tests(imaging.mat[, i], data, 
                                                            contrast.names = contrast.names, contrast.mat = contrast.mat)
@@ -287,7 +310,7 @@ vbanalysis  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests, excl
   get_time()
   
   #write out results in images
-  
+  #browser()
   if (!is.null(OUT_SUBDIR)) OUTPUT_DIR = file.path(OUTPUT_DIR, OUT_SUBDIR)
   print(paste('Writing to:', OUTPUT_DIR))
   
@@ -319,7 +342,7 @@ vbanalysis  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests, excl
   print('Done!')  
   print('------------------------------------------------------------')  
   
-  return(list (pvalues = pvalues, imaging.mat = imaging.mat, stats = results))
+  return(list (pvalues = pvalues, imaging.mat = imaging.mat, stats = results, mask = mask, excluded = excluded))
 }
 
 
@@ -330,7 +353,7 @@ shuffle_data = function(data, by = NULL){
   data.pattern = data %>% group_by(SUBJECT) %>% summarise(PATTERN = paste(c(TP), collapse = '-'))
   
   var.between = c("GROUP")
-  var.within = c("TRAINING", "TRAINING.Q", "TRAINING.A", "TRAINING.L")
+  var.within = c("TRAINING", "TRAINING.Q", "TRAINING.A")
 
   # shuffle by SUBJECT
   if ('BETWEEN' %in% by){
@@ -410,8 +433,9 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
     
     cl <- makeCluster(NPROCS)
     registerDoParallel(cl)
-    imaging.mat = foreach(i = seq(n_voxels), 
-                          .export = c('find_outliers'), 
+    imaging.mat = foreach(i = seq(n_voxels),
+                          .packages = mypackages,
+                          .export = c('find_outliers', 'markoutliersIQR'),
                           .combine = 'cbind') %dopar% find_outliers(imaging.mat[, i], data)
     stopCluster(cl)
   }
@@ -447,13 +471,13 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
     
     if (is.null(contrast.mat)){
       results.perm = foreach(i = seq(n_voxels), 
-                        .packages = c('lmerTest', 'multcomp'),
+                        .packages = mypackages,
                         .export = c('do_tests'), 
                         .combine = 'rbind') %dopar% do_tests(imaging.mat[, i], data.shuff)
     } else {
       
       results.perm = foreach(i = seq(n_voxels), 
-                        .packages = c('lmerTest', 'multcomp'),
+                        .packages = mypackages,
                         .export = c('do_tests'), 
                         .combine = 'rbind') %dopar% do_tests(imaging.mat[, i], data.shuff, 
                                                              contrast.names = contrast.names, contrast.mat = contrast.mat)
@@ -607,6 +631,7 @@ vbanalysis_perm  = function(IMAGING_FILE, OUTPUT_DIR, data, MASK_FILE, do_tests,
   }
   print('Done!')  
   print('------------------------------------------------------------')  
+  return(list (pvalues = pvalues, imaging.mat = imaging.mat, stats = results, mask = mask, excluded = excluded))
   
 }
 
@@ -675,6 +700,7 @@ save_index = function(x, mask, tag, REF_FILE, flip = F){
   } else l = ncol(x)
   
   d = dim(mask)
+  if (is.na(d[2])) d[2] = 1
   if (is.na(d[3])) d[3] = 1
   
   data.out = nifti(array(0, d)) 
@@ -722,6 +748,7 @@ save_result_oro = function(x, mask, tag, REF_FILE, to_gifti = '', flip = F){
   n = nrow(x)
   if (is.null(n)) n = 1
   d = dim(mask)
+  if (is.na(d[2])) d[2] = 1
   if (is.na(d[3])) d[3] = 1
   
   d = c(d[1:3], n)    
